@@ -27,6 +27,8 @@ st.markdown(
       /* Streamlit のヘッダ/ツールバーを隠してアプリらしく */
       [data-testid="stHeader"], [data-testid="stToolbar"] { display: none; }
       .block-container { padding-top: 1.6rem; padding-bottom: 3rem; max-width: 720px; }
+      /* タイトルはスマホ幅でも1行に収まるサイズ */
+      h1 { font-size: 1.9rem !important; }
       /* 見出し・キャプションを白系に */
       h1, h2, h3, .stMarkdown p, label, .stCaption, [data-testid="stMetricValue"],
       [data-testid="stMetricLabel"], [data-testid="stMetricDelta"] { color: #fff !important; }
@@ -34,6 +36,13 @@ st.markdown(
       div[data-baseweb="select"] > div { background:#dbe6ff !important; border:none !important;
           border-radius:10px; color:#0b1e7a !important; }
       div[data-baseweb="select"] svg { color:#0b1e7a !important; }
+      /* 数値入力（範囲指定）も淡色に */
+      div[data-testid="stNumberInput"] input {
+          background:#fff !important; color:#111 !important; font-weight:700; }
+      div[data-testid="stNumberInput"] button {
+          background:#dbe6ff !important; color:#0b1e7a !important; border:none !important; }
+      div[data-testid="stNumberInput"] > div {
+          border:none !important; border-radius:10px; overflow:hidden; }
       /* セグメントコントロール（チャンキーな角丸ピル・参考アプリ風） */
       [data-testid="stButtonGroup"] [role="radiogroup"] { gap: 8px; flex-wrap: wrap; }
       [data-testid="stButtonGroup"] button[data-variant="segmented_control"] {
@@ -53,7 +62,8 @@ st.markdown(
                font-size:1.12rem; line-height:2.0; white-space:pre-wrap;
                box-shadow:0 3px 10px rgba(0,0,0,.18); }
       .blank { color:#c0392b; font-weight:800; }
-      .qcaption { color:#0b1e7a; font-weight:700; margin-bottom:6px; }
+      /* 条文見出し（青背景の上に置くので明るい色） */
+      .qcaption { color:#dbe6ff; font-weight:700; margin-bottom:6px; }
       /* 選択肢の共通フォント（出題時ボタンと回答後divを完全統一） */
       div[data-testid="stButton"] > button[kind="secondary"],
       div[data-testid="stButton"] > button[kind="secondary"] p,
@@ -114,35 +124,58 @@ def init_state():
     ss.setdefault("wrong_nums", [])
     ss.setdefault("history", [])        # 今回セッションの回答履歴
     ss.setdefault("start_ts", 0.0)
+    ss.setdefault("queue", None)        # 復習モード用の順次キュー
+    ss.setdefault("recent", [])         # 直近に出題した条番号（連続重複の回避）
 
 
 init_state()
 
 
 def make_quiz(pool, blanks):
+    ss = st.session_state
     rng = random.Random()
-    # 前半は短め（読みやすい）の条文を優先、後半は制限なしで確実に1問出す
+    # 前半は「直近に出た条文」「長すぎる条文」を避け、後半は制限なしで確実に1問出す
     for attempt in range(30):
         art = rng.choice(pool)
+        if attempt < 15 and len(pool) > 5 and art.num in ss.recent:
+            continue
         if attempt < 20 and len(art.text) > 350:
             continue
         quiz = m.generate_quiz(art, num_blanks=blanks, rng=rng, vocab=VOCAB)
         if quiz and quiz.combined:
+            ss.recent = (ss.recent + [art.num])[-5:]
             return quiz
     return None
 
 
-def next_question():
+def _apply_quiz(quiz):
     ss = st.session_state
-    quiz = make_quiz(ss.pool, ss.sel["blanks"])
-    if quiz is None:
-        st.warning("出題できる条文が見つかりませんでした。")
-        return
     ss.quiz = quiz
     ss.qid += 1
     ss.answered = False
     ss.chosen = None
     ss.revealed = False
+
+
+def next_question():
+    ss = st.session_state
+    # 復習モード：キューを順番に消化（1周で終わる）
+    if ss.queue is not None:
+        while ss.queue:
+            art = ss.queue.pop(0)
+            quiz = m.generate_quiz(art, num_blanks=ss.sel["blanks"],
+                                   rng=random.Random(), vocab=VOCAB)
+            if quiz and quiz.combined:
+                _apply_quiz(quiz)
+                return
+        ss.stage = "result"
+        return
+    quiz = make_quiz(ss.pool, ss.sel["blanks"])
+    if quiz is None:
+        # 出題不能になったら結果画面へ（古い問題を残さない）
+        ss.stage = "result"
+        return
+    _apply_quiz(quiz)
 
 
 def start_session(sel, target):
@@ -154,13 +187,11 @@ def start_session(sel, target):
     ss.history = []
     ss.start_ts = time.time()
 
-    if sel["scope"] == "条番号を指定":
-        art = INDEX.get(int(sel["direct"]))
-        if not art:
-            st.error("その条番号は見つかりませんでした。")
-            return
-        ss.pool = [art]
-        ss.target = 1
+    ss.queue = None
+    if sel["scope"] == "範囲指定":
+        lo, hi = sel.get("range", (1, 1050))
+        lo, hi = min(lo, hi), max(lo, hi)
+        ss.pool = m.filter_by_ranges(MAIN, [(lo, hi)])
     elif sel["scope"] == "テスト範囲（既定）":
         ss.pool = m.filter_by_ranges(MAIN, m.TEST_RANGES)
     elif sel["scope"] == "編で選ぶ":
@@ -173,6 +204,14 @@ def start_session(sel, target):
     if not ss.pool:
         st.warning("この条件で出題できる条文がありません。")
         return
+
+    # 復習は順次キューで1周（間違えた条文を1問ずつ・重複なし）
+    if sel["scope"] == "復習":
+        queue = list(ss.pool)
+        random.shuffle(queue)
+        ss.queue = queue
+        ss.target = len(queue)
+
     ss.stage = "playing"
     next_question()
 
@@ -186,6 +225,9 @@ def grade(choice: str):
     ok = choice == q.combined_answer
     if ok:
         ss.correct += 1
+        # 正解できたら復習リストから外す（習得済み扱い）
+        if q.num in ss.wrong_nums:
+            ss.wrong_nums.remove(q.num)
     elif q.num and q.num not in ss.wrong_nums:
         ss.wrong_nums.append(q.num)
     ss.history.append({
@@ -218,15 +260,20 @@ if st.session_state.stage == "setup":
 
     scope = st.segmented_control(
         "出題範囲",
-        ["テスト範囲（既定）", "編で選ぶ", "民法全体", "条番号を指定"],
+        ["テスト範囲（既定）", "編で選ぶ", "民法全体", "範囲指定"],
         default="テスト範囲（既定）") or "テスト範囲（既定）"
     if scope == "テスト範囲（既定）":
         st.caption("❔ テスト範囲＝民法 1〜169・175〜207・239〜294 条")
-    parts, direct = [], 709
+    parts = []
+    r_start, r_end = 90, 120
     if scope == "編で選ぶ":
         parts = st.multiselect("編", m.PART_ORDER, default=["総則"])
-    if scope == "条番号を指定":
-        direct = st.number_input("条番号", 1, 1050, 709, 1)
+    if scope == "範囲指定":
+        c1, c2 = st.columns(2)
+        with c1:
+            r_start = st.number_input("開始（第◯条）", 1, 1050, 90, 1)
+        with c2:
+            r_end = st.number_input("終了（第◯条）", 1, 1050, 120, 1)
 
     tgt = st.segmented_control("問題数", ["5", "10", "20", "無制限"],
                                default="10") or "10"
@@ -240,14 +287,15 @@ if st.session_state.stage == "setup":
     with c1:
         if st.button("スタート", type="primary", use_container_width=True):
             start_session({"scope": scope, "parts": parts,
-                           "direct": direct, "blanks": blanks}, target)
+                           "range": (int(r_start), int(r_end)),
+                           "blanks": blanks}, target)
             st.rerun()
     with c2:
         if st.session_state.wrong_nums and st.button(
                 f"復習（{len(st.session_state.wrong_nums)}問）",
                 use_container_width=True):
-            start_session({"scope": "復習", "parts": [], "direct": None,
-                           "blanks": blanks}, None)
+            start_session({"scope": "復習", "parts": [], "blanks": blanks},
+                          None)
             st.rerun()
 
     st.stop()
@@ -315,6 +363,11 @@ if st.session_state.stage == "result":
 # ===========================================================================
 ss = st.session_state
 quiz = ss.quiz
+
+if quiz is None:
+    # 出題に失敗した状態で来たら設定へ戻す（クラッシュ防止）
+    ss.stage = "setup"
+    st.rerun()
 
 # ステータスバー（1行にまとめてモバイルでも崩れないように）
 prog = f"{ss.asked + (0 if ss.answered else 1)} / {ss.target}問" if ss.target \
