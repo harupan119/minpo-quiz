@@ -35,18 +35,19 @@ st.markdown(
           border-radius:10px; color:#0b1e7a !important; }
       div[data-baseweb="select"] svg { color:#0b1e7a !important; }
       /* セグメントコントロール（大きなピル・参考アプリ風） */
-      [data-testid="stSegmentedControl"] { width: 100%; }
-      [data-testid="stSegmentedControl"] > div { gap: 6px; background: rgba(255,255,255,.14);
-          padding: 5px; border-radius: 14px; }
-      [data-testid="stSegmentedControl"] label {
-          flex: 1 1 0; justify-content: center; border: none !important;
-          background: transparent !important; border-radius: 10px; }
-      [data-testid="stSegmentedControl"] label p {
+      [data-testid="stButtonGroup"] [role="radiogroup"] { gap: 6px; }
+      [data-testid="stButtonGroup"] button[data-variant="segmented_control"] {
+          border: 1px solid rgba(255,255,255,.35) !important;
+          background: rgba(255,255,255,.10) !important; border-radius: 10px;
+          padding: 8px 14px; }
+      [data-testid="stButtonGroup"] [role="radiogroup"] { flex-wrap: wrap; }
+      [data-testid="stButtonGroup"] button[data-variant="segmented_control"] p {
           font-size: 1.02rem !important; font-weight: 700; color: #eaf0ff !important; }
-      /* 選択中のセグメント＝白ピル＋濃紺文字 */
-      [data-testid="stSegmentedControl"] label:has(input:checked) {
-          background: #fff !important; box-shadow: 0 2px 5px rgba(0,0,0,.18); }
-      [data-testid="stSegmentedControl"] label:has(input:checked) p {
+      /* 選択中＝薄い青＋濃紺文字（黒文字がつぶれない明るさ） */
+      [data-testid="stButtonGroup"] button[data-variant="segmented_control"][aria-checked="true"] {
+          background: #cfe0ff !important; border-color: #cfe0ff !important;
+          box-shadow: 0 2px 5px rgba(0,0,0,.18); }
+      [data-testid="stButtonGroup"] button[data-variant="segmented_control"][aria-checked="true"] p {
           color: #0b1e7a !important; }
       /* 問題カード */
       .qcard { background:#fff; color:#111; border-radius:14px; padding:20px 18px;
