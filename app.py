@@ -24,28 +24,60 @@ st.markdown(
     """
     <style>
       .stApp { background: #2540e8; }
-      .block-container { padding-top: 1.2rem; padding-bottom: 3rem; max-width: 720px; }
+      /* Streamlit のヘッダ/ツールバーを隠してアプリらしく */
+      [data-testid="stHeader"], [data-testid="stToolbar"] { display: none; }
+      .block-container { padding-top: 1.6rem; padding-bottom: 3rem; max-width: 720px; }
       /* 見出し・キャプションを白系に */
       h1, h2, h3, .stMarkdown p, label, .stCaption, [data-testid="stMetricValue"],
       [data-testid="stMetricLabel"], [data-testid="stMetricDelta"] { color: #fff !important; }
+      /* セレクトボックスを淡色に（テーマに合わせる） */
+      div[data-baseweb="select"] > div { background:#dbe6ff !important; border:none !important;
+          border-radius:10px; color:#0b1e7a !important; }
+      div[data-baseweb="select"] svg { color:#0b1e7a !important; }
+      /* セグメントコントロール（大きなピル・参考アプリ風） */
+      [data-testid="stSegmentedControl"] { width: 100%; }
+      [data-testid="stSegmentedControl"] > div { gap: 6px; background: rgba(255,255,255,.14);
+          padding: 5px; border-radius: 14px; }
+      [data-testid="stSegmentedControl"] label {
+          flex: 1 1 0; justify-content: center; border: none !important;
+          background: transparent !important; border-radius: 10px; }
+      [data-testid="stSegmentedControl"] label p {
+          font-size: 1.02rem !important; font-weight: 700; color: #eaf0ff !important; }
+      /* 選択中のセグメント＝白ピル＋濃紺文字 */
+      [data-testid="stSegmentedControl"] label:has(input:checked) {
+          background: #fff !important; box-shadow: 0 2px 5px rgba(0,0,0,.18); }
+      [data-testid="stSegmentedControl"] label:has(input:checked) p {
+          color: #0b1e7a !important; }
       /* 問題カード */
       .qcard { background:#fff; color:#111; border-radius:14px; padding:20px 18px;
                font-size:1.12rem; line-height:2.0; white-space:pre-wrap;
                box-shadow:0 3px 10px rgba(0,0,0,.18); }
       .blank { color:#c0392b; font-weight:800; }
       .qcaption { color:#0b1e7a; font-weight:700; margin-bottom:6px; }
-      /* 選択肢ボタン（未回答） */
-      div[data-testid="stButton"] > button {
-          background:#dbe6ff; color:#0b1e7a; border:none; border-radius:12px;
-          padding:14px 16px; font-size:1.05rem; font-weight:700; width:100%;
-          box-shadow:0 2px 5px rgba(0,0,0,.15); }
-      div[data-testid="stButton"] > button:hover { background:#c3d5ff; color:#0b1e7a; }
+      /* 選択肢の共通フォント（出題時ボタンと回答後divを完全統一） */
+      div[data-testid="stButton"] > button[kind="secondary"],
+      div[data-testid="stButton"] > button[kind="secondary"] p,
+      .opt {
+          font-family: "Source Sans Pro", -apple-system, BlinkMacSystemFont,
+              "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", sans-serif;
+          font-size: 1.05rem; font-weight: 700; letter-spacing: normal;
+          text-align: center; }
+      /* 選択肢・Tap・パス・終了など（白背景＋黒文字＝問題と同じ） */
+      div[data-testid="stButton"] > button[kind="secondary"] {
+          background:#fff; color:#111; border:none; border-radius:12px;
+          padding:14px 16px; width:100%; box-shadow:0 2px 5px rgba(0,0,0,.15); }
+      div[data-testid="stButton"] > button[kind="secondary"]:hover {
+          background:#f0f4ff; color:#111; }
+      /* 主要アクション（スタート・次の問題へ等）＝ネイビー＋白文字 */
+      div[data-testid="stButton"] > button[kind="primary"] {
+          border:none; border-radius:12px; padding:14px 16px;
+          font-size:1.05rem; font-weight:700; width:100%; }
       /* 回答後の結果行 */
-      .opt { border-radius:12px; padding:13px 16px; font-size:1.05rem; font-weight:700;
-             margin-bottom:10px; }
+      .opt { border-radius:12px; padding:14px 16px; margin-bottom:10px;
+             box-shadow:0 2px 5px rgba(0,0,0,.12); }
       .opt-correct { background:#1e8e3e; color:#fff; }
-      .opt-wrong   { background:#d93025; color:#fff; }
-      .opt-plain   { background:#dbe6ff; color:#0b1e7a; }
+      .opt-wrong   { background:#d32f2f; color:#fff; }
+      .opt-plain   { background:#fff; color:#111; }
       .statusbar { color:#dbe6ff; font-weight:700; font-size:.95rem; }
     </style>
     """,
@@ -78,6 +110,7 @@ def init_state():
     ss.setdefault("qid", 0)
     ss.setdefault("answered", False)
     ss.setdefault("chosen", None)
+    ss.setdefault("revealed", False)    # 選択肢を表示済みか（Tapで開く）
     ss.setdefault("wrong_nums", [])
     ss.setdefault("history", [])        # 今回セッションの回答履歴
     ss.setdefault("start_ts", 0.0)
@@ -88,8 +121,11 @@ init_state()
 
 def make_quiz(pool, blanks):
     rng = random.Random()
-    for _ in range(30):
+    # 前半は短め（読みやすい）の条文を優先、後半は制限なしで確実に1問出す
+    for attempt in range(30):
         art = rng.choice(pool)
+        if attempt < 20 and len(art.text) > 350:
+            continue
         quiz = m.generate_quiz(art, num_blanks=blanks, rng=rng, vocab=VOCAB)
         if quiz and quiz.combined:
             return quiz
@@ -106,6 +142,7 @@ def next_question():
     ss.qid += 1
     ss.answered = False
     ss.chosen = None
+    ss.revealed = False
 
 
 def start_session(sel, target):
@@ -176,22 +213,27 @@ def render_body(quiz, reveal=False) -> str:
 # 画面：セットアップ
 # ===========================================================================
 if st.session_state.stage == "setup":
-    st.title("⚖️ 民法 穴埋めクイズ")
+    st.title("民法 穴埋めクイズ")
     st.caption("4択で条文の重要語を確認。範囲と問題数を選んでスタート。")
 
-    scope = st.radio("出題範囲",
-                     ["テスト範囲（既定）", "編で選ぶ", "民法全体", "条番号を指定"],
-                     help="テスト範囲＝1〜169・175〜207・239〜294 条")
+    scope = st.segmented_control(
+        "出題範囲",
+        ["テスト範囲（既定）", "編で選ぶ", "民法全体", "条番号を指定"],
+        default="テスト範囲（既定）") or "テスト範囲（既定）"
+    if scope == "テスト範囲（既定）":
+        st.caption("❔ テスト範囲＝民法 1〜169・175〜207・239〜294 条")
     parts, direct = [], 709
     if scope == "編で選ぶ":
         parts = st.multiselect("編", m.PART_ORDER, default=["総則"])
     if scope == "条番号を指定":
         direct = st.number_input("条番号", 1, 1050, 709, 1)
 
-    tgt = st.radio("問題数", ["5", "10", "20", "無制限"], index=1, horizontal=True)
+    tgt = st.segmented_control("問題数", ["5", "10", "20", "無制限"],
+                               default="10") or "10"
     target = None if tgt == "無制限" else int(tgt)
 
-    blank_choice = st.selectbox("空所の数", ["自動", "1", "2", "3", "4"])
+    blank_choice = st.segmented_control("空所の数", ["自動", "1", "2", "3", "4"],
+                                        default="自動") or "自動"
     blanks = None if blank_choice == "自動" else int(blank_choice)
 
     c1, c2 = st.columns(2)
@@ -228,14 +270,16 @@ if st.session_state.stage == "result":
     elapsed = int(time.time() - ss.start_ts) if ss.start_ts else 0
     mm, sscnd = divmod(elapsed, 60)
 
+    msg_color = "#ffd54a" if rate >= 100 else "#8ef0a6" if rate >= 70 else "#ffffff"
     st.markdown(
-        f'''<div class="qcard" style="text-align:center;">
-        <div style="font-size:1.3rem;font-weight:800;">{msg}</div>
-        <div style="margin-top:8px;">正解 <b>{ss.correct}/{ss.asked}</b> 問
-        正答率 <b>{rate:.0f}%</b></div>
-        <div style="color:#555;margin-top:4px;">学習時間 {mm}分{sscnd}秒</div>
+        f'''<div style="text-align:center; margin: 4px 0 16px;">
+          <div style="font-size:2.5rem; font-weight:900; color:{msg_color};
+               letter-spacing:.03em; text-shadow:0 3px 8px rgba(0,0,0,.28);
+               line-height:1.2;">{msg}</div>
+          <div style="font-size:1.2rem; font-weight:800; color:#fff; margin-top:10px;">
+               正解 {ss.correct} / {ss.asked}　正答率 {rate:.0f}%</div>
+          <div style="color:#cfe0ff; margin-top:2px;">学習時間 {mm}分{sscnd}秒</div>
         </div>''', unsafe_allow_html=True)
-    st.write("")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -272,58 +316,61 @@ if st.session_state.stage == "result":
 ss = st.session_state
 quiz = ss.quiz
 
-# ステータスバー
+# ステータスバー（1行にまとめてモバイルでも崩れないように）
 prog = f"{ss.asked + (0 if ss.answered else 1)} / {ss.target}問" if ss.target \
     else f"{ss.asked + (0 if ss.answered else 1)} 問目"
-top = st.columns([2, 1, 1])
-top[0].markdown(f'<div class="statusbar">{prog}</div>', unsafe_allow_html=True)
-top[1].markdown(f'<div class="statusbar">正解 {ss.correct}</div>',
-                unsafe_allow_html=True)
-with top[2]:
+top = st.columns([3, 1])
+top[0].markdown(
+    f'<div class="statusbar">{prog}　｜　正解 {ss.correct}</div>',
+    unsafe_allow_html=True)
+with top[1]:
     if st.button("終了", use_container_width=True):
         ss.stage = "result"
         st.rerun()
 
-# 問題カード（回答後は見出しと答えを表示）
+# ---- 上ペイン：問題（回答後は見出しと答えを表示） ----
 if ss.answered and quiz.caption:
     st.markdown(f'<div class="qcaption">{quiz.title}　{quiz.caption}</div>',
                 unsafe_allow_html=True)
 st.markdown(render_body(quiz, reveal=ss.answered), unsafe_allow_html=True)
-st.write("")
 
-if not ss.answered:
-    # 選択肢（タップで即判定）
-    for i, opt in enumerate(quiz.combined):
-        if st.button(opt, key=f"opt_{ss.qid}_{i}", use_container_width=True):
-            grade(opt)
-            st.rerun()
-else:
-    # 結果表示
-    for opt in quiz.combined:
-        if opt == quiz.combined_answer:
-            cls = "opt-correct"
-            label = f"◯ {opt}"
-        elif opt == ss.chosen:
-            cls = "opt-wrong"
-            label = f"✕ {opt}（あなたの回答）"
+# ---- 下ペイン：解答（問題枠とは分離した別枠） ----
+with st.container(border=True):
+    if not ss.answered:
+        if not ss.revealed:
+            # 選択肢を隠した状態。タップで表示。
+            if st.button("Tap｜タップして選択肢を表示", key=f"reveal_{ss.qid}",
+                         use_container_width=True):
+                ss.revealed = True
+                st.rerun()
         else:
-            cls = "opt-plain"
-            label = opt
-        st.markdown(f'<div class="opt {cls}">{label}</div>',
-                    unsafe_allow_html=True)
-
-    if ss.chosen == quiz.combined_answer:
-        st.success("正解！")
-    else:
-        st.error(f"不正解　正答： {quiz.combined_answer}")
-
-    # 次へ / 終了判定
-    reached = ss.target is not None and ss.asked >= ss.target
-    if reached:
-        if st.button("結果を見る", type="primary", use_container_width=True):
-            ss.stage = "result"
+            for i, opt in enumerate(quiz.combined):
+                if st.button(opt, key=f"opt_{ss.qid}_{i}",
+                             use_container_width=True):
+                    grade(opt)
+                    st.rerun()
+        # パス（未解答のまま答えを見て次へ）
+        if st.button("パス（答えを見る）", key=f"pass_{ss.qid}",
+                     use_container_width=True):
+            grade("（パス）")
             st.rerun()
     else:
-        if st.button("次の問題へ", type="primary", use_container_width=True):
-            next_question()
+        # 結果表示
+        for opt in quiz.combined:
+            if opt == quiz.combined_answer:
+                cls, label = "opt-correct", f"◯ {opt}"
+            elif opt == ss.chosen:
+                cls, label = "opt-wrong", f"✕ {opt}（あなたの回答）"
+            else:
+                cls, label = "opt-plain", opt
+            st.markdown(f'<div class="opt {cls}">{label}</div>',
+                        unsafe_allow_html=True)
+
+        reached = ss.target is not None and ss.asked >= ss.target
+        label = "結果を見る" if reached else "次の問題へ"
+        if st.button(label, type="primary", use_container_width=True):
+            if reached:
+                ss.stage = "result"
+            else:
+                next_question()
             st.rerun()
