@@ -34,19 +34,18 @@ st.markdown(
       div[data-baseweb="select"] > div { background:#dbe6ff !important; border:none !important;
           border-radius:10px; color:#0b1e7a !important; }
       div[data-baseweb="select"] svg { color:#0b1e7a !important; }
-      /* セグメントコントロール（大きなピル・参考アプリ風） */
-      [data-testid="stButtonGroup"] [role="radiogroup"] { gap: 6px; }
+      /* セグメントコントロール（チャンキーな角丸ピル・参考アプリ風） */
+      [data-testid="stButtonGroup"] [role="radiogroup"] { gap: 8px; flex-wrap: wrap; }
       [data-testid="stButtonGroup"] button[data-variant="segmented_control"] {
           border: 1px solid rgba(255,255,255,.35) !important;
-          background: rgba(255,255,255,.10) !important; border-radius: 10px;
-          padding: 8px 14px; }
-      [data-testid="stButtonGroup"] [role="radiogroup"] { flex-wrap: wrap; }
+          background: rgba(255,255,255,.12) !important; border-radius: 14px;
+          padding: 15px 20px; min-width: 60px; justify-content: center; }
       [data-testid="stButtonGroup"] button[data-variant="segmented_control"] p {
-          font-size: 1.02rem !important; font-weight: 700; color: #eaf0ff !important; }
-      /* 選択中＝薄い青＋濃紺文字（黒文字がつぶれない明るさ） */
+          font-size: 1.05rem !important; font-weight: 800; color: #eaf0ff !important; }
+      /* 選択中＝白＋濃紺文字（はっきり浮き上がる） */
       [data-testid="stButtonGroup"] button[data-variant="segmented_control"][aria-checked="true"] {
-          background: #cfe0ff !important; border-color: #cfe0ff !important;
-          box-shadow: 0 2px 5px rgba(0,0,0,.18); }
+          background: #ffffff !important; border-color: #ffffff !important;
+          box-shadow: 0 3px 8px rgba(0,0,0,.22); }
       [data-testid="stButtonGroup"] button[data-variant="segmented_control"][aria-checked="true"] p {
           color: #0b1e7a !important; }
       /* 問題カード */
