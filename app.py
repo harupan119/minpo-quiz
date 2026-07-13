@@ -94,6 +94,13 @@ st.markdown(
       .opt-wrong   { background:#d32f2f; color:#fff; }
       .opt-plain   { background:#fff; color:#111; }
       .statusbar { color:#dbe6ff; font-weight:700; font-size:.95rem; }
+      /* 解説（参考）ボックス */
+      .expl { background:#fffbe6; color:#333; border-radius:12px; padding:12px 14px;
+              margin:12px 0 4px; font-size:.98rem; line-height:1.7;
+              border-left:5px solid #ffd54a; }
+      .expl-tag { display:inline-block; background:#ffd54a; color:#5a4600;
+              font-weight:800; font-size:.78rem; padding:1px 8px; border-radius:6px;
+              margin-right:8px; }
       /* 条文マップのチップ */
       .chip { display:inline-block; padding:3px 8px; margin:2px 3px 2px 0;
               border-radius:7px; font-size:.85rem; font-weight:700; }
@@ -112,10 +119,28 @@ st.markdown(
 def get_data():
     arts = m.load_articles("civil_code.json")
     main = m.main_articles(arts)
-    return main, m.build_index(main), m.load_vocab(), m.blocks_by_chapter(main)
+    expl = {}
+    try:
+        with open("explanations.json", encoding="utf-8") as f:
+            expl = json.load(f)
+    except FileNotFoundError:
+        pass
+    return (main, m.build_index(main), m.load_vocab(),
+            m.blocks_by_chapter(main), expl)
 
 
-MAIN, INDEX, VOCAB, BLOCKS = get_data()
+MAIN, INDEX, VOCAB, BLOCKS, EXPL = get_data()
+
+
+def explanation_html(num) -> str:
+    """条番号の解説（参考）を整形。無ければ空文字。"""
+    rec = EXPL.get(str(num)) if num else None
+    if not rec or not rec.get("point"):
+        return ""
+    point = (rec["point"].replace("&", "&amp;").replace("<", "&lt;")
+             .replace(">", "&gt;"))
+    return (f'<div class="expl"><span class="expl-tag">解説（参考）</span>'
+            f'{point}</div>')
 
 
 # ---------------------------------------------------------------------------
@@ -297,7 +322,7 @@ def grade(choice: str):
         rec[2] = 1 if ok else 0
         ss.stats[q.num] = rec
     ss.history.append({
-        "title": q.title, "caption": q.caption,
+        "title": q.title, "caption": q.caption, "num": q.num,
         "body": render_body(q, reveal=True),
         "answer": q.combined_answer, "chosen": choice, "ok": ok,
     })
@@ -501,9 +526,14 @@ if st.session_state.stage == "result":
         st.markdown(h["body"], unsafe_allow_html=True)
         got = h["chosen"] or "（未選択）"
         st.markdown(
-            f'<div class="statusbar" style="margin:4px 0 14px;">'
+            f'<div class="statusbar" style="margin:4px 0 6px;">'
             f'正答： {h["answer"]}　／　あなた： {got}</div>',
             unsafe_allow_html=True)
+        expl = explanation_html(h.get("num"))
+        if expl:
+            st.markdown(expl, unsafe_allow_html=True)
+        st.markdown('<div style="margin-bottom:14px;"></div>',
+                    unsafe_allow_html=True)
     st.stop()
 
 
@@ -569,6 +599,10 @@ with st.container(border=True):
                 cls, label = "opt-plain", opt
             st.markdown(f'<div class="opt {cls}">{label}</div>',
                         unsafe_allow_html=True)
+
+        expl = explanation_html(quiz.num)
+        if expl:
+            st.markdown(expl, unsafe_allow_html=True)
 
         reached = ss.target is not None and ss.asked >= ss.target
         label = "結果を見る" if reached else "次の問題へ"
