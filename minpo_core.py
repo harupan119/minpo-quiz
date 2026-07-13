@@ -85,6 +85,7 @@ class Article:
     caption: str             # 見出し（"（不法行為による損害賠償）"）
     part: str | None         # 編名（"債権" 等）。附則等はNone
     text: str                # クイズ本文（項を改行で連結）
+    chapter: str | None = None   # 章名（"法律行為" 等）。単元ブロック用
 
 
 # ---------------------------------------------------------------------------
@@ -174,7 +175,7 @@ def load_articles(json_path: str = "civil_code.json") -> list[Article]:
 
     articles: list[Article] = []
 
-    def walk(node, current_part: str | None):
+    def walk(node, current_part: str | None, current_chapter: str | None):
         if isinstance(node, dict):
             tag = node.get("tag")
             if tag == "Part":
@@ -186,19 +187,31 @@ def load_articles(json_path: str = "civil_code.json") -> list[Article]:
                 # "第三編　債権" -> "債権"
                 m = re.search(r"編[\s　]*(.+)$", title)
                 current_part = m.group(1).strip() if m else title.strip()
+                current_chapter = None
+            if tag == "Chapter":
+                title = ""
+                for c in node.get("children", []):
+                    if c.get("tag") == "ChapterTitle":
+                        title = _plain_text(c)
+                        break
+                # "第五章　法律行為" -> "法律行為"
+                m = re.search(r"章[\s　]*(.+)$", title)
+                current_chapter = m.group(1).strip() if m else title.strip()
             if tag == "Article":
-                articles.append(_build_article(node, current_part))
+                articles.append(_build_article(node, current_part,
+                                               current_chapter))
             for c in node.get("children", []):
-                walk(c, current_part)
+                walk(c, current_part, current_chapter)
         elif isinstance(node, list):
             for x in node:
-                walk(x, current_part)
+                walk(x, current_part, current_chapter)
 
-    walk(root, None)
+    walk(root, None, None)
     return articles
 
 
-def _build_article(art: dict, part: str | None) -> Article:
+def _build_article(art: dict, part: str | None,
+                   chapter: str | None = None) -> Article:
     num, raw = _article_num(art)
     caption = ""
     title = ""
@@ -213,7 +226,7 @@ def _build_article(art: dict, part: str | None) -> Article:
             paragraphs.append(_structured_text(c).strip())
     text = "\n".join(p for p in paragraphs if p)
     return Article(num=num, num_raw=raw, title=title, caption=caption,
-                   part=part, text=text)
+                   part=part, text=text, chapter=chapter)
 
 
 def main_articles(articles: list[Article]) -> list[Article]:
@@ -244,6 +257,22 @@ def filter_by_ranges(articles: list[Article],
         if any(lo <= a.num <= hi for lo, hi in ranges):
             out.append(a)
     return out
+
+
+def blocks_by_chapter(articles: list[Article]) \
+        -> list[tuple[str, str, list[Article]]]:
+    """(編, 章, 条文リスト) を本文中の出現順で返す（単元ブロック用）。"""
+    order: list[tuple[str, str]] = []
+    grouped: dict[tuple[str, str], list[Article]] = {}
+    for a in articles:
+        if not a.part or not a.chapter:
+            continue
+        key = (a.part, a.chapter)
+        if key not in grouped:
+            grouped[key] = []
+            order.append(key)
+        grouped[key].append(a)
+    return [(p, c, grouped[(p, c)]) for p, c in order]
 
 
 def build_index(articles: list[Article]) -> dict[int, Article]:

@@ -6,13 +6,18 @@
 
 from __future__ import annotations
 
+import base64
+import json
 import random
 import re
 import time
 
 import streamlit as st
+from streamlit_js_eval import streamlit_js_eval
 
 import minpo_core as m
+
+PERSIST_KEY = "minpo_quiz_v1"   # localStorage のキー（学習データ永続化）
 
 st.set_page_config(page_title="民法 穴埋めクイズ", page_icon="⚖️",
                    layout="centered", initial_sidebar_state="collapsed")
@@ -89,6 +94,14 @@ st.markdown(
       .opt-wrong   { background:#d32f2f; color:#fff; }
       .opt-plain   { background:#fff; color:#111; }
       .statusbar { color:#dbe6ff; font-weight:700; font-size:.95rem; }
+      /* 条文マップのチップ */
+      .chip { display:inline-block; padding:3px 8px; margin:2px 3px 2px 0;
+              border-radius:7px; font-size:.85rem; font-weight:700; }
+      .chip-ok { background:#1e8e3e; color:#fff; }
+      .chip-ng { background:#d32f2f; color:#fff; }
+      .chip-no { background:rgba(255,255,255,.22); color:#eaf0ff; }
+      /* streamlit-js-eval の不可視iframeが余白を作らないように */
+      iframe[height="0"] { display:none; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -99,10 +112,10 @@ st.markdown(
 def get_data():
     arts = m.load_articles("civil_code.json")
     main = m.main_articles(arts)
-    return main, m.build_index(main), m.load_vocab()
+    return main, m.build_index(main), m.load_vocab(), m.blocks_by_chapter(main)
 
 
-MAIN, INDEX, VOCAB = get_data()
+MAIN, INDEX, VOCAB, BLOCKS = get_data()
 
 
 # ---------------------------------------------------------------------------
@@ -126,9 +139,53 @@ def init_state():
     ss.setdefault("start_ts", 0.0)
     ss.setdefault("queue", None)        # 復習モード用の順次キュー
     ss.setdefault("recent", [])         # 直近に出題した条番号（連続重複の回避）
+    ss.setdefault("stats", {})          # 条番号 -> [出題数, 正解数, 直近(1=正解)]
+    ss.setdefault("persist_loaded", False)
 
 
 init_state()
+
+
+# ---------------------------------------------------------------------------
+# 永続化（ブラウザ localStorage）
+# ---------------------------------------------------------------------------
+def load_persist():
+    """localStorage から学習データを読み込む（初回マウント後のrerunで届く）。"""
+    ss = st.session_state
+    if ss.persist_loaded:
+        return
+    raw = streamlit_js_eval(
+        js_expressions=f"localStorage.getItem('{PERSIST_KEY}') || '__EMPTY__'",
+        key="ls_load")
+    if raw is None:
+        return  # コンポーネント未マウント。次のrerunで値が来る
+    ss.persist_loaded = True
+    if raw != "__EMPTY__":
+        try:
+            data = json.loads(raw)
+            ss.wrong_nums = [int(n) for n in data.get("w", [])]
+            ss.stats = {int(k): list(v) for k, v in data.get("s", {}).items()}
+        except (ValueError, TypeError):
+            pass
+
+
+def save_persist():
+    """学習データを localStorage へ保存（読み込み完了前は上書きしない）。"""
+    ss = st.session_state
+    if not ss.persist_loaded:
+        return
+    payload = json.dumps(
+        {"w": ss.wrong_nums,
+         "s": {str(k): v for k, v in ss.stats.items()}},
+        separators=(",", ":"))
+    b64 = base64.b64encode(payload.encode()).decode()
+    ss._save_seq = ss.get("_save_seq", 0) + 1
+    streamlit_js_eval(
+        js_expressions=f"localStorage.setItem('{PERSIST_KEY}', atob('{b64}'))",
+        key=f"ls_save_{ss._save_seq}")
+
+
+load_persist()
 
 
 def make_quiz(pool, blanks):
@@ -194,8 +251,9 @@ def start_session(sel, target):
         ss.pool = m.filter_by_ranges(MAIN, [(lo, hi)])
     elif sel["scope"] == "テスト範囲（既定）":
         ss.pool = m.filter_by_ranges(MAIN, m.TEST_RANGES)
-    elif sel["scope"] == "編で選ぶ":
-        ss.pool = m.filter_by_parts(MAIN, sel["parts"])
+    elif sel["scope"] == "単元":
+        ss.pool = [a for a in MAIN
+                   if a.part == sel["part"] and a.chapter == sel["chapter"]]
     elif sel["scope"] == "復習":
         ss.pool = [INDEX[n] for n in ss.wrong_nums if n in INDEX]
     else:
@@ -230,6 +288,14 @@ def grade(choice: str):
             ss.wrong_nums.remove(q.num)
     elif q.num and q.num not in ss.wrong_nums:
         ss.wrong_nums.append(q.num)
+    # 条文ごとの成績（マップ・単元の進捗用）
+    if q.num:
+        rec = ss.stats.get(q.num) or [0, 0, 0]
+        rec[0] += 1
+        if ok:
+            rec[1] += 1
+        rec[2] = 1 if ok else 0
+        ss.stats[q.num] = rec
     ss.history.append({
         "title": q.title, "caption": q.caption,
         "body": render_body(q, reveal=True),
@@ -260,14 +326,11 @@ if st.session_state.stage == "setup":
 
     scope = st.segmented_control(
         "出題範囲",
-        ["テスト範囲（既定）", "編で選ぶ", "民法全体", "範囲指定"],
+        ["テスト範囲（既定）", "単元で選ぶ", "民法全体", "範囲指定"],
         default="テスト範囲（既定）") or "テスト範囲（既定）"
     if scope == "テスト範囲（既定）":
         st.caption("❔ テスト範囲＝民法 1〜169・175〜207・239〜294 条")
-    parts = []
     r_start, r_end = 90, 120
-    if scope == "編で選ぶ":
-        parts = st.multiselect("編", m.PART_ORDER, default=["総則"])
     if scope == "範囲指定":
         c1, c2 = st.columns(2)
         with c1:
@@ -283,20 +346,106 @@ if st.session_state.stage == "setup":
                                         default="自動") or "自動"
     blanks = None if blank_choice == "自動" else int(blank_choice)
 
+    if scope == "単元で選ぶ":
+        # 参考アプリのブロック方式：単元をタップするとすぐ開始
+        part_sel = st.segmented_control("編", m.PART_ORDER,
+                                        default="総則") or "総則"
+        st.caption("単元をタップすると開始します（数字は 直近正解の条数 / 全条数）")
+        stats = st.session_state.stats
+        for p, ch, arts in BLOCKS:
+            if p != part_sel:
+                continue
+            ok_n = sum(1 for a in arts
+                       if a.num and stats.get(a.num, [0, 0, 0])[2] == 1)
+            if st.button(f"{ch}　　{ok_n} / {len(arts)}",
+                         key=f"blk_{p}_{ch}", use_container_width=True):
+                start_session({"scope": "単元", "part": p, "chapter": ch,
+                               "blanks": blanks}, target)
+                st.rerun()
+    else:
+        c1, c2 = st.columns(2)
+        with c1:
+            if st.button("スタート", type="primary", use_container_width=True):
+                start_session({"scope": scope,
+                               "range": (int(r_start), int(r_end)),
+                               "blanks": blanks}, target)
+                st.rerun()
+        with c2:
+            if st.session_state.wrong_nums and st.button(
+                    f"復習（{len(st.session_state.wrong_nums)}問）",
+                    use_container_width=True):
+                start_session({"scope": "復習", "blanks": blanks}, None)
+                st.rerun()
+
+    st.divider()
     c1, c2 = st.columns(2)
     with c1:
-        if st.button("スタート", type="primary", use_container_width=True):
-            start_session({"scope": scope, "parts": parts,
-                           "range": (int(r_start), int(r_end)),
-                           "blanks": blanks}, target)
+        if st.button("条文マップ", use_container_width=True):
+            st.session_state.stage = "map"
             st.rerun()
     with c2:
-        if st.session_state.wrong_nums and st.button(
-                f"復習（{len(st.session_state.wrong_nums)}問）",
-                use_container_width=True):
-            start_session({"scope": "復習", "parts": [], "blanks": blanks},
-                          None)
-            st.rerun()
+        if st.button("学習データをリセット", use_container_width=True):
+            st.session_state.wrong_nums = []
+            st.session_state.stats = {}
+            # 注意: ここで st.rerun() すると保存コンポーネントが実行されない
+            save_persist()
+            st.success("学習データをリセットしました。")
+
+    st.stop()
+
+
+# ===========================================================================
+# 画面：条文マップ（網羅状況の可視化）
+# ===========================================================================
+if st.session_state.stage == "map":
+    ss = st.session_state
+    stats = ss.stats
+
+    if st.button("← 設定に戻る"):
+        ss.stage = "setup"
+        st.rerun()
+
+    st.title("条文マップ")
+
+    map_scope = st.segmented_control(
+        "表示範囲", ["テスト範囲", "民法全体"], default="テスト範囲") or "テスト範囲"
+    arts_all = (m.filter_by_ranges(MAIN, m.TEST_RANGES)
+                if map_scope == "テスト範囲" else MAIN)
+
+    total = len(arts_all)
+    ok_n = sum(1 for a in arts_all
+               if a.num and stats.get(a.num, [0, 0, 0])[2] == 1)
+    ng_n = sum(1 for a in arts_all
+               if a.num and a.num in stats and stats[a.num][2] == 0)
+    seen_n = ok_n + ng_n
+    pct = ok_n / total * 100 if total else 0
+
+    st.markdown(
+        f'''<div style="margin:6px 0 14px;">
+        <div style="font-weight:800; font-size:1.15rem; color:#fff;">
+          正解 {ok_n} / {total} 条（{pct:.0f}%）　出題済み {seen_n} 条</div>
+        <div style="background:rgba(255,255,255,.2); border-radius:8px; height:12px; margin-top:8px;">
+          <div style="background:#1e8e3e; width:{pct:.1f}%; height:12px; border-radius:8px;"></div>
+        </div>
+        <div style="color:#dbe6ff; margin-top:10px; font-size:.9rem;">
+          <span class="chip chip-ok">正解</span>
+          <span class="chip chip-ng">不正解</span>
+          <span class="chip chip-no">未出題</span>　（数字は条番号）
+        </div></div>''', unsafe_allow_html=True)
+
+    for p, ch, arts in m.blocks_by_chapter(arts_all):
+        chips = []
+        for a in arts:
+            if not a.num:
+                continue
+            rec = stats.get(a.num)
+            state = "no" if rec is None else ("ok" if rec[2] == 1 else "ng")
+            label = a.num_raw.replace("_", "-")
+            chips.append(f'<span class="chip chip-{state}">{label}</span>')
+        st.markdown(
+            f'<div style="margin:12px 0 2px; font-weight:800; color:#fff;">'
+            f'{p}編　{ch}</div><div>{"".join(chips)}</div>',
+            unsafe_allow_html=True)
 
     st.stop()
 
@@ -408,6 +557,8 @@ with st.container(border=True):
             grade("（パス）")
             st.rerun()
     else:
+        # 回答が確定したので学習データを保存（qid+askedで一意キー）
+        save_persist()
         # 結果表示
         for opt in quiz.combined:
             if opt == quiz.combined_answer:
